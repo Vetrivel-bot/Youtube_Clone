@@ -17,6 +17,14 @@ const server = http.createServer(app);
 // Middleware
 app.use(cors());
 app.use(express.json());
+// 🔥 Manual GET trigger to send a message notification
+app.get("/", async (req, res) => {
+  try {
+    res.status(200).json({ success: true, message: "Hello from server!" });
+  } catch (err) {
+    res.status(500).json({ success: false, error: "Something went wrong" });
+  }
+});
 
 // Socket.IO setup
 const io = new Server(server, {
