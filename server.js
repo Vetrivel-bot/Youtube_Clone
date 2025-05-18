@@ -2,7 +2,18 @@ const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const cors = require("cors");
+const fs = require("fs");
+const path = require("path");
 const admin = require("firebase-admin");
+
+// Initialize file logging
+const logStream = fs.createWriteStream(path.join(__dirname, 'server.log'), { flags: 'a' });
+const log = (msg) => {
+  const timestamp = new Date().toISOString();
+  const line = `[${timestamp}] ${msg}\n`;
+  console.log(line.trim());
+  logStream.write(line);
+};
 
 // Initialize Firebase Admin SDK
 const serviceAccount = require("./serviceAccountKey.json");
@@ -13,41 +24,53 @@ admin.initializeApp({
 const app = express();
 const server = http.createServer(app);
 
+// Trust proxy so we can get real client IP from X-Forwarded-For
+app.set("trust proxy", true);
+
 // Middleware
 app.use(cors());
 app.use(express.json());
 
-// Helper: Send FCM Notification with optional IP
+// Helper: Send FCM Notification with optional IP and timestamp
 const sendNotification = async (customBody = "Default notification body", clientIp = null) => {
+  const timestamp = new Date().toISOString();
+  const bodyWithTs = `${customBody} at ${timestamp}`;
   const message = {
     token: hardcodedFcmToken,
     notification: {
       title: "Socket Status Update",
-      body: clientIp ? `${customBody} (IP: ${clientIp})` : customBody,
+      body: clientIp
+        ? `${bodyWithTs} (IP: ${clientIp})`
+        : bodyWithTs,
     },
     data: {
       customKey: "customValue",
+      timestamp,
       ...(clientIp && { clientIp }),
     },
   };
 
+  // Log notification attempt
+  log(`Sending notification: "${message.notification.body}"`);
+
   try {
     const response = await admin.messaging().send(message);
-    console.log("Notification sent, message ID:", response);
-    return { messageId: response };
+    log(`Notification sent successfully, message ID: ${response}`);
+    return { messageId: response, timestamp };
   } catch (error) {
-    console.error("Error sending notification:", error);
+    log(`Error sending notification: ${error.message}`);
     throw error;
   }
 };
 
-// Manual GET trigger
-app.get("/", async (req, res) => {
+// Manual GET trigger\ napp.get("/", async (req, res) => {
+  const clientIp = req.headers["x-forwarded-for"]?.split(",")[0].trim() || req.ip;
+  log(`Received GET / from IP: ${clientIp}`);
   try {
-    const clientIp = req.ip;
     await sendNotification("Hello from server!", clientIp);
     res.status(200).json({ success: true, message: "Hello from server!", ip: clientIp });
   } catch (err) {
+    log(`Error in GET /: ${err.message}`);
     res.status(500).json({ success: false, error: "Something went wrong" });
   }
 });
@@ -58,45 +81,43 @@ const io = new Server(server, {
 });
 
 io.on("connection", (socket) => {
-  const clientIp = socket.handshake.address;
-  console.log(`New client connected: ${socket.id} (IP: ${clientIp})`);
-
-  // Notify on connection
-  sendNotification(`A new client has connected. Socket ID: ${socket.id}`, clientIp);
+  const xfwd = socket.handshake.headers["x-forwarded-for"];
+  const clientIp = xfwd ? xfwd.split(",")[0].trim() : socket.handshake.address;
+  log(`Client connected: ${socket.id} from IP: ${clientIp}`);
+  sendNotification(`A new client connected. Socket ID: ${socket.id}`, clientIp);
 
   socket.on("sendMessage", (msg) => {
+    log(`sendMessage from ${socket.id}: ${JSON.stringify(msg)}`);
     io.emit("newMessage", msg);
   });
 
   socket.on("disconnect", () => {
-    console.log(`Client disconnected: ${socket.id}`);
-    sendNotification(`A client has disconnected. Socket ID: ${socket.id}`, clientIp);
+    log(`Client disconnected: ${socket.id}`);
+    sendNotification(`A client disconnected. Socket ID: ${socket.id}`, clientIp);
   });
 });
 
 // Other endpoints
 app.get("/notify", async (req, res) => {
+  const clientIp = req.headers["x-forwarded-for"]?.split(",")[0].trim() || req.ip;
+  log(`Received GET /notify from IP: ${clientIp}`);
   try {
-    const clientIp = req.ip;
-    const response = await sendNotification(
-      "Manual notification triggered via GET /notify",
-      clientIp
-    );
+    const response = await sendNotification("Manual notification triggered via GET /notify", clientIp);
     res.status(200).json({ success: true, response, ip: clientIp });
   } catch (err) {
+    log(`Error in GET /notify: ${err.message}`);
     res.status(500).json({ success: false, error: "Failed to send notification" });
   }
 });
 
 app.get("/website", async (req, res) => {
+  const clientIp = req.headers["x-forwarded-for"]?.split(",")[0].trim() || req.ip;
+  log(`Received GET /website from IP: ${clientIp}`);
   try {
-    const clientIp = req.ip;
-    const response = await sendNotification(
-      "Someone entered the website /website",
-      clientIp
-    );
+    const response = await sendNotification("Someone entered the website /website", clientIp);
     res.status(200).json({ success: true, response, ip: clientIp });
   } catch (err) {
+    log(`Error in GET /website: ${err.message}`);
     res.status(500).json({ success: false, error: "Failed to send notification" });
   }
 });
@@ -106,5 +127,5 @@ const hardcodedFcmToken = `c94RvYloTraWsToM-QL2II:APA91bG3qxPePaynJWp-P0AKq0GTC5
 
 // Start the server
 server.listen(5000, "0.0.0.0", () => {
-  console.log("Socket.io server running on port 5000 and accepting all IPs");
+  log("Socket.io server running on port 5000 and accepting all IPs");
 });
