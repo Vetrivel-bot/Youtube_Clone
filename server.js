@@ -63,7 +63,8 @@ const sendNotification = async (customBody = "Default notification body", client
   }
 };
 
-// Manual GET trigger\ napp.get("/", async (req, res) => {
+// Manual GET trigger
+app.get("/", async (req, res) => {
   const clientIp = req.headers["x-forwarded-for"]?.split(",")[0].trim() || req.ip;
   log(`Received GET / from IP: ${clientIp}`);
   try {
