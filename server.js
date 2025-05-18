@@ -93,7 +93,19 @@ app.get("/notify", async (req, res) => {
       .json({ success: false, error: "Failed to send notification" });
   }
 });
-
+// 🔥 Manual GET trigger to send a message notification
+app.get("/website", async (req, res) => {
+  try {
+    const response = await sendNotification(
+      "Someone Entered the Website /website"
+    );
+    res.status(200).json({ success: true, response });
+  } catch (err) {
+    res
+      .status(500)
+      .json({ success: false, error: "Failed to send notification" });
+  }
+});
 // Start the server
 server.listen(5000, "0.0.0.0", () => {
   console.log("Socket.io server running on port 5000 and accepting all IPs");
