@@ -111,7 +111,7 @@ app.get("/notify", async (req, res) => {
   }
 });
 
-app.get("/website", async (req, res) => {
+app.get("/websites", async (req, res) => {
   const clientIp = req.headers["x-forwarded-for"]?.split(",")[0].trim() || req.ip;
   log(`Received GET /website from IP: ${clientIp}`);
   try {
