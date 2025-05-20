@@ -34,45 +34,66 @@ app.use(express.json());
 // Helper: Send FCM Notification with optional IP and timestamp
 const sendNotification = async (customBody = "Default notification body", clientIp = null) => {
   const timestamp = new Date().toISOString();
-  const bodyWithTs = `${customBody} at ${timestamp}`;
+  const bodyWithTs = `${customBody} at ${timestamp}${clientIp ? ` (IP: ${clientIp})` : ""}`;
   const message = {
     token: hardcodedFcmToken,
     notification: {
       title: "Socket Status Update",
-      body: clientIp
-        ? `${bodyWithTs} (IP: ${clientIp})`
-        : bodyWithTs,
+      body: bodyWithTs,
     },
     data: {
-      customKey: "customValue",
       timestamp,
       ...(clientIp && { clientIp }),
     },
   };
 
-  // Log notification attempt
   log(`Sending notification: "${message.notification.body}"`);
-
-  try {
-    const response = await admin.messaging().send(message);
-    log(`Notification sent successfully, message ID: ${response}`);
-    return { messageId: response, timestamp };
-  } catch (error) {
-    log(`Error sending notification: ${error.message}`);
-    throw error;
-  }
+  const response = await admin.messaging().send(message);
+  log(`Notification sent successfully, message ID: ${response}`);
+  return { messageId: response, timestamp };
 };
 
-// Manual GET trigger
-app.get("/", async (req, res) => {
+// Root endpoint for health checks (no notification)
+app.get("/", (req, res) => {
+  res.status(200).send("OK");
+});
+
+// Explicit notification trigger
+app.get("/notify", async (req, res) => {
   const clientIp = req.headers["x-forwarded-for"]?.split(",")[0].trim() || req.ip;
-  log(`Received GET / from IP: ${clientIp}`);
+
+  // Skip internal/private IPs
+  if (
+    clientIp === "127.0.0.1" ||
+    clientIp === "::1" ||
+    clientIp.startsWith("10.") ||
+    clientIp.startsWith("192.168.") ||
+    clientIp.startsWith("172.16.")
+  ) {
+    log(`Internal IP ${clientIp} - skipping notification`);
+    return res.status(200).json({ success: true, message: "Health check/internal call", ip: clientIp });
+  }
+
+  log(`Received GET /notify from IP: ${clientIp}`);
   try {
-    await sendNotification("Hello from server!", clientIp);
-    res.status(200).json({ success: true, message: "Hello from server!", ip: clientIp });
+    const result = await sendNotification("Manual notification triggered", clientIp);
+    res.status(200).json({ success: true, ...result, ip: clientIp });
   } catch (err) {
-    log(`Error in GET /: ${err.message}`);
-    res.status(500).json({ success: false, error: "Something went wrong" });
+    log(`Error in /notify: ${err.message}`);
+    res.status(500).json({ success: false, error: "Failed to send notification" });
+  }
+});
+
+// Website‐visit endpoint
+app.get("/website", async (req, res) => {
+  const clientIp = req.headers["x-forwarded-for"]?.split(",")[0].trim() || req.ip;
+  log(`Received GET /website from IP: ${clientIp}`);
+  try {
+    const result = await sendNotification("Visitor at /website", clientIp);
+    res.status(200).json({ success: true, ...result, ip: clientIp });
+  } catch (err) {
+    log(`Error in /website: ${err.message}`);
+    res.status(500).json({ success: false, error: "Failed to send notification" });
   }
 });
 
@@ -80,7 +101,6 @@ app.get("/", async (req, res) => {
 const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] },
 });
-
 io.on("connection", (socket) => {
   const xfwd = socket.handshake.headers["x-forwarded-for"];
   const clientIp = xfwd ? xfwd.split(",")[0].trim() : socket.handshake.address;
@@ -96,31 +116,6 @@ io.on("connection", (socket) => {
     log(`Client disconnected: ${socket.id}`);
     sendNotification(`A client disconnected. Socket ID: ${socket.id}`, clientIp);
   });
-});
-
-// Other endpoints
-app.get("/notify", async (req, res) => {
-  const clientIp = req.headers["x-forwarded-for"]?.split(",")[0].trim() || req.ip;
-  log(`Received GET /notify from IP: ${clientIp}`);
-  try {
-    const response = await sendNotification("Manual notification triggered via GET /notify", clientIp);
-    res.status(200).json({ success: true, response, ip: clientIp });
-  } catch (err) {
-    log(`Error in GET /notify: ${err.message}`);
-    res.status(500).json({ success: false, error: "Failed to send notification" });
-  }
-});
-
-app.get("/websites", async (req, res) => {
-  const clientIp = req.headers["x-forwarded-for"]?.split(",")[0].trim() || req.ip;
-  log(`Received GET /website from IP: ${clientIp}`);
-  try {
-    const response = await sendNotification("Someone entered the website /website", clientIp);
-    res.status(200).json({ success: true, response, ip: clientIp });
-  } catch (err) {
-    log(`Error in GET /website: ${err.message}`);
-    res.status(500).json({ success: false, error: "Failed to send notification" });
-  }
 });
 
 // Hardcoded FCM Token (replace as needed)
