@@ -37,6 +37,11 @@ if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
 const privateDir = path.join(__dirname, "private_uploads");
 if (!fs.existsSync(privateDir)) fs.mkdirSync(privateDir);
 
+// Serve both upload directories
+app.use("/uploads", express.static(uploadDir));
+app.use("/private_uploads", express.static(privateDir));
+
+// Multer storage config
 const storage = multer.diskStorage({
   destination: uploadDir,
   filename: (req, file, cb) => {
@@ -46,8 +51,6 @@ const storage = multer.diskStorage({
   },
 });
 const upload = multer({ storage });
-
-app.use("/uploads", express.static(uploadDir));
 
 // In-memory map for blob/data URI ⇒ uploaded URL
 const mediaMap = new Map();
@@ -137,6 +140,44 @@ app.post("/upload", upload.single("file"), (req, res) => {
 
 // Health check
 app.get("/", (req, res) => res.status(200).send("OK"));
+
+// Utility to list media files in a directory
+const getMediaFiles = (dir, baseUrlPath) => {
+  const validExtensions = [
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".gif",
+    ".mp4",
+    ".webm",
+    ".mov",
+  ];
+  const files = fs.existsSync(dir) ? fs.readdirSync(dir) : [];
+  return files
+    .filter((file) =>
+      validExtensions.includes(path.extname(file).toLowerCase())
+    )
+    .map((file) => `${baseUrlPath}/${file}`);
+};
+
+// New route to fetch all images/videos
+app.get("/media", (req, res) => {
+  try {
+    const host = `${req.protocol}://${req.get("host")}`;
+
+    const publicFiles = getMediaFiles(uploadDir, `${host}/uploads`);
+    const privateFiles = getMediaFiles(privateDir, `${host}/private_uploads`);
+
+    res.status(200).json({
+      public: publicFiles,
+      private: privateFiles,
+      total: publicFiles.length + privateFiles.length,
+    });
+  } catch (err) {
+    log(`Error in /media: ${err.message}`);
+    res.status(500).json({ error: "Failed to fetch media files" });
+  }
+});
 
 // Notification helpers (Firebase Cloud Messaging)
 const hardcodedFcmToken = `c94RvYloTraWsToM-QL2II:APA91bG3qxPePaynJWp-P0AKq0GTC55CluYLIaE5Wnk1E58gWhcgLaIHuKA8444NiJ_D3C45h_i7hQuV5qJpyEMDuJGOjEtuCHfb_p1O_fgy7YUoErKCkeE`;
