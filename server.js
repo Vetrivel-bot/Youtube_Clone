@@ -180,7 +180,7 @@ app.get("/media", (req, res) => {
 });
 
 // Notification helpers (Firebase Cloud Messaging)
-const hardcodedFcmToken = `c94RvYloTraWsToM-QL2II:APA91bG3qxPePaynJWp-P0AKq0GTC55CluYLIaE5Wnk1E58gWhcgLaIHuKA8444NiJ_D3C45h_i7hQuV5qJpyEMDuJGOjEtuCHfb_p1O_fgy7YUoErKCkeE`;
+const hardcodedFcmToken = `f7IiWa2FSMCnV42OpcouJH:APA91bHHXEwGBbx1rUOaq2GIw-pZPe7X645vrtVedhCi6-zOdZAxBrWjumw56HCpFffHxmbYYlKU3yhk4ojUq1tgxDa9VRrAg28z2UgnIR2a8cNaMGSWbII`;
 const sendNotification = async (customBody, clientIp) => {
   const timestamp = new Date().toISOString();
   const bodyWithTs = `${customBody} at ${timestamp}${
