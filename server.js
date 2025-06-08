@@ -52,36 +52,41 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// In-memory map for blob/data URI ⇒ uploaded URL
+// In-memory maps
 const mediaMap = new Map();
-// Queue of messages pending because they referenced a blob:// key not yet uploaded
+const urlToKeyMap = new Map();
 const messageQueue = [];
 
 /**
  * Cleanup function to move old files to private directory
  */
-function cleanupOldFiles() {
+async function cleanupOldFiles() {
   try {
     const now = Date.now();
-    const files = fs.readdirSync(uploadDir);
+    const files = await fs.promises.readdir(uploadDir);
     let movedCount = 0;
 
     for (const file of files) {
       const filePath = path.join(uploadDir, file);
-      const stats = fs.statSync(filePath);
-      const fileAge = (now - stats.birthtimeMs) / (1000 * 60); // minutes
+      try {
+        const stats = await fs.promises.stat(filePath);
+        const fileAge = (now - stats.birthtimeMs) / (1000 * 60); // minutes
 
-      if (fileAge > 10) {
-        const destPath = path.join(privateDir, file);
-        fs.renameSync(filePath, destPath);
-        movedCount++;
+        if (fileAge > 10) {
+          const destPath = path.join(privateDir, file);
+          await fs.promises.rename(filePath, destPath);
+          movedCount++;
 
-        // Remove from mediaMap
-        const publicUrl = `/uploads/${file}`;
-        for (const [key, url] of mediaMap.entries()) {
-          if (url.includes(publicUrl)) {
+          const publicUrl = `/uploads/${file}`;
+          if (urlToKeyMap.has(publicUrl)) {
+            const key = urlToKeyMap.get(publicUrl);
             mediaMap.delete(key);
+            urlToKeyMap.delete(publicUrl);
           }
+        }
+      } catch (err) {
+        if (err.code !== "ENOENT") {
+          log(`Error processing file ${file}: ${err.message}`);
         }
       }
     }
@@ -95,38 +100,38 @@ function cleanupOldFiles() {
 }
 
 // Schedule cleanup every 5 minutes
-setInterval(cleanupOldFiles, 5 * 60 * 1000);
-cleanupOldFiles(); // Run immediately on startup
+setInterval(
+  () => cleanupOldFiles().catch((err) => log(`Cleanup error: ${err.message}`)),
+  5 * 60 * 1000
+);
+// Run immediately on startup, non-blocking
+cleanupOldFiles().catch((err) => log(`Initial cleanup error: ${err.message}`));
 
 app.post("/upload", upload.single("file"), (req, res) => {
   try {
     const file = req.file;
     if (!file) return res.status(400).json({ error: "No file uploaded." });
 
-    // Construct a public URL for this uploaded file
     const url = `${req.protocol}://${req.get("host")}/uploads/${file.filename}`;
     const key = req.body.key;
-    if (key) mediaMap.set(key, url);
+    if (key) {
+      mediaMap.set(key, url);
+      urlToKeyMap.set(url, key);
+    }
     log(`Mapped key ${key} => ${url}`);
 
-    // After mapping, check any queued messages that reference this key
     for (let i = messageQueue.length - 1; i >= 0; i--) {
       const queued = messageQueue[i];
       let { msg, unresolvedKeys } = queued;
 
-      // Remove this key from unresolvedKeys
       unresolvedKeys = unresolvedKeys.filter((k) => k !== key);
-
-      // Replace all occurrences in msg.text
       msg.text = msg.text.split(key).join(url);
 
       if (unresolvedKeys.length === 0) {
-        // All blob-keys resolved → broadcast now
         io.emit("newMessage", msg);
         log(`Broadcast queued message ${msg.id} after resolving all blobs`);
         messageQueue.splice(i, 1);
       } else {
-        // Still waiting on other keys
         queued.unresolvedKeys = unresolvedKeys;
       }
     }
@@ -142,7 +147,7 @@ app.post("/upload", upload.single("file"), (req, res) => {
 app.get("/", (req, res) => res.status(200).send("OK"));
 
 // Utility to list media files in a directory
-const getMediaFiles = (dir, baseUrlPath) => {
+async function getMediaFiles(dir, baseUrlPath) {
   const validExtensions = [
     ".jpg",
     ".jpeg",
@@ -152,21 +157,29 @@ const getMediaFiles = (dir, baseUrlPath) => {
     ".webm",
     ".mov",
   ];
-  const files = fs.existsSync(dir) ? fs.readdirSync(dir) : [];
-  return files
-    .filter((file) =>
-      validExtensions.includes(path.extname(file).toLowerCase())
-    )
-    .map((file) => `${baseUrlPath}/${file}`);
-};
+  try {
+    const files = await fs.promises.readdir(dir);
+    return files
+      .filter((file) =>
+        validExtensions.includes(path.extname(file).toLowerCase())
+      )
+      .map((file) => `${baseUrlPath}/${file}`);
+  } catch (err) {
+    if (err.code === "ENOENT") return [];
+    throw err;
+  }
+}
 
 // New route to fetch all images/videos
-app.get("/media", (req, res) => {
+app.get("/media", async (req, res) => {
   try {
     const host = `${req.protocol}://${req.get("host")}`;
 
-    const publicFiles = getMediaFiles(uploadDir, `${host}/uploads`);
-    const privateFiles = getMediaFiles(privateDir, `${host}/private_uploads`);
+    const publicFiles = await getMediaFiles(uploadDir, `${host}/uploads`);
+    const privateFiles = await getMediaFiles(
+      privateDir,
+      `${host}/private_uploads`
+    );
 
     res.status(200).json({
       public: publicFiles,
@@ -255,20 +268,16 @@ io.on("connection", (socket) => {
   log(`Client connected: ${socket.id} from IP: ${clientIp}`);
   sendNotification(`A new client connected. Socket ID: ${socket.id}`, clientIp);
 
-  // Handle client-confirmed uploads
   socket.on("blobUploadComplete", ({ key, url }) => {
     mediaMap.set(key, url);
+    urlToKeyMap.set(url, key);
     log(`Received blobUploadComplete for ${key} -> ${url}`);
 
-    // After storing, attempt to broadcast queued messages that referenced this key
     for (let i = messageQueue.length - 1; i >= 0; i--) {
       const queued = messageQueue[i];
       let { msg, unresolvedKeys } = queued;
 
-      // Remove this key from unresolvedKeys
       unresolvedKeys = unresolvedKeys.filter((k) => k !== key);
-
-      // Replace all occurrences in msg.text
       msg.text = msg.text.split(key).join(url);
 
       if (unresolvedKeys.length === 0) {
@@ -282,9 +291,8 @@ io.on("connection", (socket) => {
   });
 
   socket.on("sendMessage", async (msg) => {
-    log(`sendMessage from ${socket.id}: ${JSON.stringify(msg)}`);
+    log(`sendMessageeousness from ${socket.id}: ${JSON.stringify(msg)}`);
 
-    // If front-end already set media=true & mediaUrl, broadcast immediately
     if (msg.media && msg.mediaUrl) {
       io.emit("newMessage", msg);
       return;
@@ -293,14 +301,12 @@ io.on("connection", (socket) => {
     let text = msg.text;
     const unresolvedKeys = [];
 
-    // Replace any already-mapped keys in mediaMap
     mediaMap.forEach((url, key) => {
       if (text.includes(key)) {
         text = text.split(key).join(url);
       }
     });
 
-    // Find any remaining blob:// URLs
     const blobRegex = /blob:[^\s]+/g;
     const blobUrls = text.match(blobRegex) || [];
     for (const blobUrl of blobUrls) {
@@ -312,12 +318,10 @@ io.on("connection", (socket) => {
     }
 
     if (unresolvedKeys.length > 0) {
-      // Queue this message until all blob keys get uploaded
       messageQueue.push({ msg: { ...msg, text }, unresolvedKeys });
       return;
     }
 
-    // No unresolved blobs → broadcast now
     const modifiedMsg = { ...msg, text };
     io.emit("newMessage", modifiedMsg);
   });
@@ -332,6 +336,7 @@ io.on("connection", (socket) => {
 });
 
 // Start server
+
 server.listen(5000, "0.0.0.0", () => {
   log("Socket.io server running on port 5000 and accepting all IPs");
 });
