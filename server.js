@@ -104,6 +104,7 @@ setInterval(
   () => cleanupOldFiles().catch((err) => log(`Cleanup error: ${err.message}`)),
   5 * 60 * 1000
 );
+
 // Run immediately on startup, non-blocking
 cleanupOldFiles().catch((err) => log(`Initial cleanup error: ${err.message}`));
 
@@ -170,17 +171,15 @@ async function getMediaFiles(dir, baseUrlPath) {
   }
 }
 
-// New route to fetch all images/videos
+// Route to fetch all images/videos
 app.get("/media", async (req, res) => {
   try {
     const host = `${req.protocol}://${req.get("host")}`;
-
     const publicFiles = await getMediaFiles(uploadDir, `${host}/uploads`);
     const privateFiles = await getMediaFiles(
       privateDir,
       `${host}/private_uploads`
     );
-
     res.status(200).json({
       public: publicFiles,
       private: privateFiles,
@@ -189,6 +188,60 @@ app.get("/media", async (req, res) => {
   } catch (err) {
     log(`Error in /media: ${err.message}`);
     res.status(500).json({ error: "Failed to fetch media files" });
+  }
+});
+
+// Route to delete all files in both directories
+app.delete("/media", async (req, res) => {
+  try {
+    await Promise.all([
+      fs.promises.rm(uploadDir, { recursive: true, force: true }),
+      fs.promises.rm(privateDir, { recursive: true, force: true }),
+    ]);
+    fs.mkdirSync(uploadDir);
+    fs.mkdirSync(privateDir);
+    res.status(200).json({ success: true, message: "All files deleted." });
+  } catch (err) {
+    log(`Error deleting all files: ${err.message}`);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Route to delete all files in a specific scope (public or private)
+app.delete("/media/:scope", async (req, res) => {
+  const { scope } = req.params;
+  if (scope !== "public" && scope !== "private") {
+    return res.status(400).json({ success: false, error: "Invalid scope" });
+  }
+  const dir = scope === "private" ? privateDir : uploadDir;
+  try {
+    await fs.promises.rm(dir, { recursive: true, force: true });
+    fs.mkdirSync(dir);
+    res
+      .status(200)
+      .json({ success: true, message: `All ${scope} files deleted.` });
+  } catch (err) {
+    log(`Error deleting ${scope} files: ${err.message}`);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Route to delete a specific file in a scope
+app.delete("/media/:scope/:filename", async (req, res) => {
+  const { scope, filename } = req.params;
+  if (scope !== "public" && scope !== "private") {
+    return res.status(400).json({ success: false, error: "Invalid scope" });
+  }
+  const dir = scope === "private" ? privateDir : uploadDir;
+  const filePath = path.join(dir, filename);
+  try {
+    await fs.promises.unlink(filePath);
+    res
+      .status(200)
+      .json({ success: true, message: `${filename} deleted from ${scope}.` });
+  } catch (err) {
+    log(`Error deleting file ${filename} from ${scope}: ${err.message}`);
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -291,7 +344,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("sendMessage", async (msg) => {
-    log(`sendMessageeousness from ${socket.id}: ${JSON.stringify(msg)}`);
+    log(`sendMessage from ${socket.id}: ${JSON.stringify(msg)}`);
 
     if (msg.media && msg.mediaUrl) {
       io.emit("newMessage", msg);
@@ -336,7 +389,6 @@ io.on("connection", (socket) => {
 });
 
 // Start server
-
 server.listen(5000, "0.0.0.0", () => {
   log("Socket.io server running on port 5000 and accepting all IPs");
 });
