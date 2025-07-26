@@ -1,3 +1,5 @@
+require("dotenv").config(); // if using .env file
+
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
@@ -19,9 +21,12 @@ const log = (msg) => {
   logStream.write(line);
 };
 
-// Initialize Firebase Admin SDK
-const serviceAccount = require("./serviceAccountKey.json");
-admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+// Initialize Firebase  SDK
+// const serviceAccount = require(process.env.Secret)
+// admin.initializeApp({ credential: admin.credential.cert(process.env.Secret) });
+admin.initializeApp({
+  credential: admin.credential.cert(JSON.parse(process.env.Secret)),
+});
 
 const app = express();
 const server = http.createServer(app);
